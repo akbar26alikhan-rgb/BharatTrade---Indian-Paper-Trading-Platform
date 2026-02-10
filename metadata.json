@@ -1,0 +1,8 @@
+{
+  "name": "BharatTrade - Indian Paper Trading Platform",
+  "description": "A high-fidelity demo trading application for the Indian Stock Market featuring a virtual wallet, real-time price simulations, order management, and AI-powered market insights using Gemini.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
