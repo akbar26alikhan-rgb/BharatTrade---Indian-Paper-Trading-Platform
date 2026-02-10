@@ -10,8 +10,8 @@ import { getMarketInsights, getMarketNews } from './services/geminiService';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [selectedStock, setSelectedStock] = useState<Instrument>(INITIAL_STOCKS[0]);
   const [stocks, setStocks] = useState<Instrument[]>(INITIAL_STOCKS);
+  const [selectedStock, setSelectedStock] = useState<Instrument>(INITIAL_STOCKS[0]);
   const [news, setNews] = useState<string[]>([]);
   const [aiInsight, setAiInsight] = useState<string>('Select a stock to see AI analysis...');
   const [isLoadingInsight, setIsLoadingInsight] = useState(false);
@@ -37,7 +37,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const interval = setInterval(() => {
       setStocks(prev => prev.map(s => {
-        const volatility = 0.002;
+        const volatility = 0.0015;
         const changeAmount = (Math.random() - 0.5) * s.price * volatility;
         const newPrice = Math.max(1, s.price + changeAmount);
         const originalPrice = s.price / (1 + (s.changePercent / 100));
@@ -56,9 +56,9 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Sync selected stock price
+  // Sync selected stock price and data
   useEffect(() => {
-    const updated = stocks.find(s => s.id === selectedStock.id);
+    const updated = stocks.find(s => s.symbol === selectedStock.symbol && s.exchange === selectedStock.exchange);
     if (updated) setSelectedStock(updated);
   }, [stocks]);
 
@@ -74,6 +74,26 @@ const App: React.FC = () => {
       setIsLoadingInsight(false);
     });
   }, [selectedStock.symbol]);
+
+  const handleAddStock = (symbol: string, exchange: 'NSE' | 'BSE') => {
+    if (stocks.some(s => s.symbol === symbol && s.exchange === exchange)) {
+      alert("Stock already in watchlist.");
+      return;
+    }
+
+    const newInstrument: Instrument = {
+      id: Math.random().toString(36).substr(2, 9),
+      symbol,
+      name: `${symbol} (Custom)`,
+      price: Math.floor(Math.random() * 5000) + 100, // Random starting price for demo
+      change: 0,
+      changePercent: 0,
+      exchange
+    };
+
+    setStocks(prev => [newInstrument, ...prev]);
+    setSelectedStock(newInstrument);
+  };
 
   const handlePlaceOrder = useCallback((orderDetails: {
     instrumentId: string;
@@ -177,7 +197,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Calculate global portfolio values
   const portfolioStats = useMemo(() => {
     const totalPnl = state.positions.reduce((acc, pos) => {
       const ltp = stocks.find(s => s.id === pos.instrumentId)?.price || pos.avgPrice;
@@ -192,9 +211,9 @@ const App: React.FC = () => {
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="p-6 bg-white border-b border-slate-100 flex items-center justify-between">
-              <div className="flex gap-8">
+              <div className="flex gap-8 overflow-x-auto whitespace-nowrap scrollbar-hide">
                 {INDICES.map(idx => (
-                  <div key={idx.name}>
+                  <div key={idx.name} className="flex-shrink-0">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{idx.name}</div>
                     <div className="flex items-baseline gap-2">
                       <span className="text-lg font-bold text-slate-800">{idx.value.toLocaleString('en-IN')}</span>
@@ -205,16 +224,16 @@ const App: React.FC = () => {
                   </div>
                 ))}
               </div>
-              <div className="text-right">
+              <div className="text-right ml-4">
                 <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Equity Wallet</div>
                 <div className="text-xl font-bold text-blue-600">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
-                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[500px]">
+                  <div className="bg-white p-0 rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[600px]">
                     <PriceChart stock={selectedStock} />
                   </div>
 
@@ -479,6 +498,7 @@ const App: React.FC = () => {
           <Watchlist 
             stocks={stocks} 
             onSelect={setSelectedStock} 
+            onAddStock={handleAddStock}
             selectedSymbol={selectedStock.symbol} 
           />
         )}
