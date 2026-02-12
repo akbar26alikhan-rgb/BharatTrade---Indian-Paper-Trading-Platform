@@ -91,7 +91,6 @@ const App: React.FC = () => {
 
           // Remove position
           newPositions = newPositions.filter((p) => p.instrumentId !== pos.instrumentId || p.quantity !== pos.quantity);
-          console.log(`AUTO EXIT: ${pos.symbol} at ₹${price.toFixed(2)} via ${triggerType} | PnL: ₹${realizedPnl.toFixed(2)}`);
         }
       });
 
@@ -176,17 +175,13 @@ const App: React.FC = () => {
 
   const handleExchangeChange = (exchange: 'NSE' | 'BSE') => {
     if (selectedStock.exchange === exchange) return;
-    
-    // Check if we have this symbol on the other exchange in our current list
     const existing = stocks.find(s => s.symbol === selectedStock.symbol && s.exchange === exchange);
-    
     if (existing) {
       setSelectedStock(existing);
     } else {
-      // Temporarily "switch" the view to the other exchange by creating a virtual instrument
       const updated: Instrument = {
         ...selectedStock,
-        id: `${selectedStock.symbol}-${exchange}-${Math.random()}`, // Fresh ID to force widget reload
+        id: `${selectedStock.symbol}-${exchange}-${Math.random()}`,
         exchange
       };
       setSelectedStock(updated);
@@ -219,8 +214,6 @@ const App: React.FC = () => {
 
       if (existingPosIdx > -1) {
         const p = newPositions[existingPosIdx];
-        
-        // Calculate Realized P&L if reducing/closing position
         const isReducing = (p.quantity > 0 && !isBuy) || (p.quantity < 0 && isBuy);
         if (isReducing) {
           const qtyToRealize = Math.min(Math.abs(p.quantity), orderDetails.quantity);
@@ -230,7 +223,6 @@ const App: React.FC = () => {
         }
 
         const newQty = p.quantity + qtyChange;
-        
         if (newQty === 0) {
           newPositions.splice(existingPosIdx, 1);
         } else {
@@ -280,7 +272,6 @@ const App: React.FC = () => {
   const handleExitPosition = (pos: Position) => {
     const stock = stocks.find(s => s.id === pos.instrumentId);
     const ltp = stock?.price || pos.avgPrice;
-    
     if (window.confirm(`Are you sure you want to exit ${pos.symbol} position of ${pos.quantity} units at ₹${ltp.toFixed(2)}?`)) {
       handlePlaceOrder({
         instrumentId: pos.instrumentId,
@@ -296,7 +287,6 @@ const App: React.FC = () => {
 
   const handleSquareOffAll = () => {
     if (state.positions.length === 0) return;
-    
     if (window.confirm(`Are you sure you want to close all ${state.positions.length} open positions at market price?`)) {
       state.positions.forEach(pos => {
         const stock = stocks.find(s => s.id === pos.instrumentId);
@@ -321,6 +311,24 @@ const App: React.FC = () => {
     }, 0);
     return { totalPnl };
   }, [state.positions, stocks]);
+
+  // Grouping logic for "Datewise" history
+  const groupedOrders = useMemo(() => {
+    const groups: { [key: string]: Order[] } = {};
+    state.orders.forEach(order => {
+      const date = new Date(order.timestamp).toLocaleDateString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric'
+      });
+      if (!groups[date]) groups[date] = [];
+      groups[date].push(order);
+    });
+    return Object.entries(groups).sort((a, b) => {
+      // Sort by date descending
+      const dateA = new Date(a[1][0].timestamp).getTime();
+      const dateB = new Date(b[1][0].timestamp).getTime();
+      return dateB - dateA;
+    });
+  }, [state.orders]);
 
   const renderContent = () => {
     switch (activeTab) {
@@ -350,15 +358,9 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
-                  {/* Real-time Interactive Chart */}
                   <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[550px]">
-                    <PriceChart 
-                      stock={selectedStock} 
-                      onExchangeChange={handleExchangeChange} 
-                    />
+                    <PriceChart stock={selectedStock} onExchangeChange={handleExchangeChange} />
                   </div>
-
-                  {/* AI & News Section */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                       <div className="flex items-center justify-between mb-4">
@@ -371,7 +373,6 @@ const App: React.FC = () => {
                         {aiInsight}
                       </div>
                     </div>
-
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                       <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
                         <i className="fa-solid fa-newspaper text-orange-500"></i> Market Pulse
@@ -387,14 +388,8 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 </div>
-
                 <div className="space-y-6">
-                  <TradingPanel 
-                    stock={selectedStock} 
-                    walletBalance={state.wallet.balance}
-                    onPlaceOrder={handlePlaceOrder}
-                  />
-
+                  <TradingPanel stock={selectedStock} walletBalance={state.wallet.balance} onPlaceOrder={handlePlaceOrder} />
                   <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 rounded-2xl shadow-xl text-white">
                     <h3 className="font-bold text-white/80 text-xs uppercase tracking-widest mb-4">Portfolio Summary</h3>
                     <div className="space-y-4">
@@ -424,8 +419,8 @@ const App: React.FC = () => {
       case 'orders':
         return (
           <div className="flex-1 p-8 bg-slate-50 overflow-y-auto">
-             <div className="flex justify-between items-center mb-6">
-               <h2 className="text-2xl font-bold text-slate-800">Order History</h2>
+             <div className="flex justify-between items-center mb-8">
+               <h2 className="text-2xl font-bold text-slate-800">Datewise Order History</h2>
                <div className="flex items-center gap-4">
                  <button 
                    onClick={() => setState(prev => ({ ...prev, orders: [] }))}
@@ -436,52 +431,67 @@ const App: React.FC = () => {
                  <span className="text-xs text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-200">Total: {state.orders.length}</span>
                </div>
              </div>
-             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-               <table className="w-full text-left">
-                 <thead className="bg-slate-50 border-b border-slate-100">
-                   <tr>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Time</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Type</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Instrument</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Qty</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Price</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">P&L</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Status</th>
-                   </tr>
-                 </thead>
-                 <tbody className="divide-y divide-slate-50">
-                   {state.orders.length === 0 ? (
-                     <tr>
-                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400">No orders placed yet.</td>
-                     </tr>
-                   ) : state.orders.map(order => (
-                     <tr key={order.id} className="hover:bg-slate-50/50 transition-colors">
-                       <td className="px-6 py-4 text-sm text-slate-500">
-                         <div className="font-medium text-slate-700">{new Date(order.timestamp).toLocaleDateString()}</div>
-                         <div className="text-[10px] opacity-60">{new Date(order.timestamp).toLocaleTimeString()}</div>
-                       </td>
-                       <td className="px-6 py-4">
-                         <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${order.transactionType === TransactionType.BUY ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>
-                           {order.transactionType}
-                         </span>
-                       </td>
-                       <td className="px-6 py-4 font-bold text-slate-800">{order.symbol}</td>
-                       <td className="px-6 py-4 text-sm text-slate-600">{order.quantity}</td>
-                       <td className="px-6 py-4 text-sm font-semibold text-slate-800">₹{order.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                       <td className={`px-6 py-4 text-sm font-bold ${order.realizedPnl !== undefined ? (order.realizedPnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-300'}`}>
-                         {order.realizedPnl !== undefined ? (
-                           <>
-                             {order.realizedPnl >= 0 ? '+' : ''}₹{order.realizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                           </>
-                         ) : '--'}
-                       </td>
-                       <td className="px-6 py-4">
-                         <span className="px-2 py-1 bg-emerald-100 text-emerald-600 rounded-md text-[10px] font-bold">EXECUTED</span>
-                       </td>
-                     </tr>
-                   ))}
-                 </tbody>
-               </table>
+
+             <div className="space-y-10">
+               {state.orders.length === 0 ? (
+                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center text-slate-400 italic">
+                   No historical orders found.
+                 </div>
+               ) : groupedOrders.map(([date, orders]) => (
+                 <div key={date} className="space-y-3">
+                   <div className="flex items-center gap-4 px-2">
+                     <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">{date}</h3>
+                     <div className="h-px flex-1 bg-slate-200"></div>
+                     <span className="text-[10px] font-bold text-slate-400 uppercase">{orders.length} {orders.length === 1 ? 'Order' : 'Orders'}</span>
+                   </div>
+                   
+                   <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                     <table className="w-full text-left">
+                       <thead className="bg-slate-50 border-b border-slate-100">
+                         <tr>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Time</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Type</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Instrument</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Qty</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Avg. Price</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Realized P&L</th>
+                           <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Status</th>
+                         </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-50">
+                         {orders.map(order => (
+                           <tr key={order.id} className="hover:bg-slate-50/50 transition-colors">
+                             <td className="px-6 py-4">
+                               <span className="text-xs font-bold text-slate-500">{new Date(order.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                             </td>
+                             <td className="px-6 py-4">
+                               <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-tighter ${order.transactionType === TransactionType.BUY ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>
+                                 {order.transactionType}
+                               </span>
+                             </td>
+                             <td className="px-6 py-4">
+                               <div className="font-bold text-slate-800 text-sm">{order.symbol}</div>
+                               <div className="text-[9px] text-slate-400 uppercase font-black">{order.productType}</div>
+                             </td>
+                             <td className="px-6 py-4 text-xs font-bold text-slate-600">{order.quantity}</td>
+                             <td className="px-6 py-4 text-xs font-bold text-slate-800">₹{order.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                             <td className={`px-6 py-4 text-xs font-black ${order.realizedPnl !== undefined ? (order.realizedPnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-300'}`}>
+                               {order.realizedPnl !== undefined ? (
+                                 <>
+                                   {order.realizedPnl >= 0 ? '+' : ''}₹{order.realizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                 </>
+                               ) : '--'}
+                             </td>
+                             <td className="px-6 py-4 text-right">
+                               <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 rounded-md text-[9px] font-black tracking-tighter uppercase">EXECUTED</span>
+                             </td>
+                           </tr>
+                         ))}
+                       </tbody>
+                     </table>
+                   </div>
+                 </div>
+               ))}
              </div>
           </div>
         );
@@ -489,10 +499,10 @@ const App: React.FC = () => {
         return (
           <div className="flex-1 p-8 bg-slate-50 overflow-y-auto">
              <div className="flex justify-between items-center mb-6">
-               <h2 className="text-2xl font-bold text-slate-800">Positions</h2>
+               <h2 className="text-2xl font-bold text-slate-800">Active Positions</h2>
                <div className="flex items-center gap-4">
                  <div className="text-right">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Total Unrealized P&L</p>
+                    <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Unrealized P&L</p>
                     <p className={`text-xl font-black ${portfolioStats.totalPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                       {portfolioStats.totalPnl >= 0 ? '+' : ''}₹{portfolioStats.totalPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </p>
@@ -506,7 +516,6 @@ const App: React.FC = () => {
                  </button>
                </div>
              </div>
-             
              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                <table className="w-full text-left">
                  <thead className="bg-slate-50 border-b border-slate-100">
@@ -516,55 +525,45 @@ const App: React.FC = () => {
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Avg Price</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">LTP</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">P&L</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Exits</th>
+                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Targets</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-slate-50">
                    {state.positions.length === 0 ? (
                      <tr>
-                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">No open positions. Start trading from the dashboard!</td>
+                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">No open positions. Select a stock to trade.</td>
                      </tr>
                    ) : state.positions.map(pos => {
                      const stock = stocks.find(s => s.id === pos.instrumentId);
                      const ltp = stock?.price || pos.avgPrice;
                      const pnl = (ltp - pos.avgPrice) * pos.quantity;
-                     const pnlPercent = (pnl / (Math.abs(pos.avgPrice * Math.abs(pos.quantity)) || 1)) * 100;
-
                      return (
                        <tr key={`${pos.instrumentId}-${pos.quantity}`} className="hover:bg-slate-50/50 transition-colors">
                          <td className="px-6 py-4">
                            <div className="font-bold text-slate-800">{pos.symbol}</div>
-                           <div className="text-[10px] text-slate-400 uppercase tracking-tighter">Paper Trade</div>
+                           <div className="text-[10px] text-slate-400 uppercase font-black">Paper Trade</div>
                          </td>
                          <td className="px-6 py-4 text-center">
                            <span className={`px-2 py-1 rounded-md text-xs font-bold ${pos.quantity > 0 ? 'bg-blue-50 text-blue-600' : 'bg-rose-50 text-rose-600'}`}>
                              {pos.quantity}
                            </span>
                          </td>
-                         <td className="px-6 py-4 text-sm text-slate-600">₹{pos.avgPrice.toFixed(2)}</td>
-                         <td className="px-6 py-4 text-sm font-medium text-slate-800">
+                         <td className="px-6 py-4 text-sm text-slate-600 font-bold">₹{pos.avgPrice.toFixed(2)}</td>
+                         <td className="px-6 py-4 text-sm font-bold text-slate-800">
                            ₹{ltp.toFixed(2)}
-                           <div className={`text-[10px] ${stock && stock.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                             {stock ? `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}` : '0.00'}
-                           </div>
                          </td>
-                         <td className={`px-6 py-4 font-black ${pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                         <td className={`px-6 py-4 font-black text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                            {pnl >= 0 ? '+' : ''}{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                          </td>
                          <td className="px-6 py-4">
-                            <div className="text-[10px] font-bold space-y-1 uppercase">
+                            <div className="text-[10px] font-bold space-y-1 uppercase tracking-tighter">
                               <div className={pos.stopLoss ? 'text-rose-400' : 'text-slate-300'}>SL: {pos.stopLoss ? `₹${pos.stopLoss}` : 'NONE'}</div>
                               <div className={pos.takeProfit ? 'text-emerald-400' : 'text-slate-300'}>TP: {pos.takeProfit ? `₹${pos.takeProfit}` : 'NONE'}</div>
                             </div>
                          </td>
                          <td className="px-6 py-4 text-right">
-                           <button 
-                             className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 rounded-lg hover:bg-rose-700 transition-all shadow-sm active:scale-95"
-                             onClick={() => handleExitPosition(pos)}
-                           >
-                             Exit
-                           </button>
+                           <button className="px-4 py-1.5 text-xs font-black text-white bg-rose-600 rounded-lg hover:bg-rose-700 transition-all uppercase tracking-tighter" onClick={() => handleExitPosition(pos)}>Exit</button>
                          </td>
                        </tr>
                      );
@@ -572,16 +571,6 @@ const App: React.FC = () => {
                  </tbody>
                </table>
              </div>
-          </div>
-        );
-      case 'holdings':
-        return (
-          <div className="flex-1 p-8 bg-slate-50 flex items-center justify-center text-slate-400">
-            <div className="text-center">
-              <i className="fa-solid fa-suitcase text-5xl mb-4 opacity-20"></i>
-              <p className="font-medium">Holdings represent long-term portfolio assets.</p>
-              <p className="text-sm">For demo purposes, please use the Positions tab to track active trades.</p>
-            </div>
           </div>
         );
       case 'funds':
@@ -592,45 +581,22 @@ const App: React.FC = () => {
               <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                 <p className="text-sm text-slate-400 font-bold uppercase mb-2">Available Margin</p>
                 <p className="text-5xl font-black text-blue-600 mb-8">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
-                
                 <div className="space-y-4 border-t border-slate-100 pt-6">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Opening Balance</span>
-                    <span className="font-semibold text-slate-800">₹{state.wallet.initialBalance.toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Used Margin</span>
-                    <span className="font-semibold text-rose-500">₹{ (state.wallet.initialBalance - state.wallet.balance > 0 ? state.wallet.initialBalance - state.wallet.balance : 0).toLocaleString('en-IN') }</span>
-                  </div>
+                  <div className="flex justify-between"><span className="text-slate-500 font-bold text-xs uppercase">Opening Balance</span><span className="font-black text-slate-800">₹{state.wallet.initialBalance.toLocaleString('en-IN')}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500 font-bold text-xs uppercase">Used Margin</span><span className="font-black text-rose-500">₹{ (state.wallet.initialBalance - state.wallet.balance > 0 ? state.wallet.initialBalance - state.wallet.balance : 0).toLocaleString('en-IN') }</span></div>
                 </div>
-                
                 <div className="mt-10 flex gap-4">
-                  <button className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100">Add Funds</button>
-                  <button 
-                    onClick={() => {
-                      if(confirm("Reset wallet to 10 Lakh?")) {
-                        setState(prev => ({ ...prev, wallet: { balance: INITIAL_BALANCE, initialBalance: INITIAL_BALANCE }, positions: [], orders: [] }));
-                      }
-                    }}
-                    className="flex-1 bg-slate-100 text-slate-600 py-3 rounded-xl font-bold hover:bg-slate-200 transition-all"
-                  >
-                    Reset Wallet
-                  </button>
+                  <button className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-black uppercase text-xs hover:bg-blue-700 transition-all shadow-lg shadow-blue-100">Add Funds</button>
+                  <button onClick={() => { if(confirm("Reset wallet to 10 Lakh?")) { setState(prev => ({ ...prev, wallet: { balance: INITIAL_BALANCE, initialBalance: INITIAL_BALANCE }, positions: [], orders: [] })); } }} className="flex-1 bg-slate-100 text-slate-600 py-3 rounded-xl font-black uppercase text-xs hover:bg-slate-200 transition-all">Reset Wallet</button>
                 </div>
               </div>
-
               <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
-                <h3 className="font-bold text-slate-800 mb-6">Recent Ledger Entries</h3>
+                <h3 className="font-black text-slate-800 mb-6 uppercase tracking-widest text-xs">Recent Ledger</h3>
                 <div className="space-y-4">
                   {state.orders.slice(0, 5).map(order => (
                     <div key={order.id} className="flex justify-between items-center py-3 border-b border-slate-50">
-                      <div>
-                        <p className="font-bold text-sm text-slate-800">{order.transactionType === TransactionType.BUY ? 'Purchase' : 'Sale'} of {order.symbol}</p>
-                        <p className="text-[10px] text-slate-400">{new Date(order.timestamp).toLocaleString()}</p>
-                      </div>
-                      <p className={`font-bold ${order.transactionType === TransactionType.BUY ? 'text-rose-500' : 'text-emerald-500'}`}>
-                        {order.transactionType === TransactionType.BUY ? '-' : '+'}₹{(order.price * order.quantity).toLocaleString('en-IN')}
-                      </p>
+                      <div><p className="font-bold text-sm text-slate-800">{order.transactionType === TransactionType.BUY ? 'Bought' : 'Sold'} {order.symbol}</p><p className="text-[10px] text-slate-400 font-bold">{new Date(order.timestamp).toLocaleString()}</p></div>
+                      <p className={`font-black text-sm ${order.transactionType === TransactionType.BUY ? 'text-rose-500' : 'text-emerald-500'}`}>{order.transactionType === TransactionType.BUY ? '-' : '+'}₹{(order.price * order.quantity).toLocaleString('en-IN')}</p>
                     </div>
                   ))}
                   {state.orders.length === 0 && <p className="text-center text-slate-400 py-10 italic">No transactions yet.</p>}
@@ -647,17 +613,10 @@ const App: React.FC = () => {
   return (
     <div className="flex h-screen w-full bg-slate-50 overflow-hidden">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
-      
       <div className="flex flex-1 overflow-hidden">
         {activeTab === 'dashboard' && (
-          <Watchlist 
-            stocks={stocks} 
-            onSelect={setSelectedStock} 
-            onAddStock={handleAddStock}
-            selectedSymbol={selectedStock.symbol} 
-          />
+          <Watchlist stocks={stocks} onSelect={setSelectedStock} onAddStock={handleAddStock} selectedSymbol={selectedStock.symbol} />
         )}
-        
         {renderContent()}
       </div>
     </div>
