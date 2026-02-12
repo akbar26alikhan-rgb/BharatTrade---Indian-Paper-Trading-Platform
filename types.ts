@@ -42,6 +42,8 @@ export interface Order {
   price: number; // Limit price or execution price
   status: OrderStatus;
   timestamp: number;
+  stopLoss?: number;
+  takeProfit?: number;
 }
 
 export interface Position {
@@ -51,6 +53,8 @@ export interface Position {
   avgPrice: number;
   currentPrice: number;
   realizedPnl: number;
+  stopLoss?: number;
+  takeProfit?: number;
 }
 
 export interface Wallet {

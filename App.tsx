@@ -33,28 +33,100 @@ const App: React.FC = () => {
     localStorage.setItem('bharattrade_state', JSON.stringify(state));
   }, [state]);
 
+  // Handle auto-exits for SL/TP
+  const checkTriggers = useCallback((currentStocks: Instrument[]) => {
+    setState(prev => {
+      let balanceChange = 0;
+      let newOrders = [...prev.orders];
+      let newPositions = [...prev.positions];
+      let changed = false;
+
+      prev.positions.forEach((pos, idx) => {
+        const stock = currentStocks.find(s => s.id === pos.instrumentId);
+        if (!stock) return;
+
+        const price = stock.price;
+        let triggered = false;
+        let triggerType = "";
+
+        // Check Take Profit
+        if (pos.takeProfit) {
+          if ((pos.quantity > 0 && price >= pos.takeProfit) || (pos.quantity < 0 && price <= pos.takeProfit)) {
+            triggered = true;
+            triggerType = "Take Profit";
+          }
+        }
+        // Check Stop Loss
+        if (pos.stopLoss) {
+          if ((pos.quantity > 0 && price <= pos.stopLoss) || (pos.quantity < 0 && price >= pos.stopLoss)) {
+            triggered = true;
+            triggerType = "Stop Loss";
+          }
+        }
+
+        if (triggered) {
+          changed = true;
+          const exitValue = price * Math.abs(pos.quantity);
+          balanceChange += pos.quantity > 0 ? exitValue : -exitValue;
+          
+          // Log the order
+          newOrders.unshift({
+            id: Math.random().toString(36).substr(2, 9),
+            instrumentId: pos.instrumentId,
+            symbol: pos.symbol,
+            orderType: OrderType.MARKET,
+            productType: ProductType.MIS,
+            transactionType: pos.quantity > 0 ? TransactionType.SELL : TransactionType.BUY,
+            quantity: Math.abs(pos.quantity),
+            price: price,
+            status: OrderStatus.EXECUTED,
+            timestamp: Date.now(),
+          });
+
+          // Remove position
+          newPositions = newPositions.filter((p) => p.instrumentId !== pos.instrumentId || p.quantity !== pos.quantity);
+          console.log(`AUTO EXIT: ${pos.symbol} at ₹${price.toFixed(2)} via ${triggerType}`);
+        }
+      });
+
+      if (!changed) return prev;
+
+      return {
+        ...prev,
+        wallet: { ...prev.wallet, balance: prev.wallet.balance + balanceChange },
+        orders: newOrders,
+        positions: newPositions
+      };
+    });
+  }, []);
+
   // Simulate price updates every 2 seconds
   useEffect(() => {
     const interval = setInterval(() => {
-      setStocks(prev => prev.map(s => {
-        const volatility = 0.0015;
-        const changeAmount = (Math.random() - 0.5) * s.price * volatility;
-        const newPrice = Math.max(1, s.price + changeAmount);
-        const originalPrice = s.price / (1 + (s.changePercent / 100));
-        const totalChange = newPrice - originalPrice;
-        const totalChangePercent = (totalChange / originalPrice) * 100;
+      setStocks(prev => {
+        const updatedStocks = prev.map(s => {
+          const volatility = 0.0015;
+          const changeAmount = (Math.random() - 0.5) * s.price * volatility;
+          const newPrice = Math.max(1, s.price + changeAmount);
+          const originalPrice = s.price / (1 + (s.changePercent / 100));
+          const totalChange = newPrice - originalPrice;
+          const totalChangePercent = (totalChange / originalPrice) * 100;
+          
+          return {
+            ...s,
+            price: newPrice,
+            change: totalChange,
+            changePercent: totalChangePercent
+          };
+        });
         
-        return {
-          ...s,
-          price: newPrice,
-          change: totalChange,
-          changePercent: totalChangePercent
-        };
-      }));
+        checkTriggers(updatedStocks);
+        return updatedStocks;
+      });
     }, 2000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [checkTriggers]);
 
   // Sync selected stock price and data
   useEffect(() => {
@@ -76,16 +148,17 @@ const App: React.FC = () => {
   }, [selectedStock.symbol]);
 
   const handleAddStock = (symbol: string, exchange: 'NSE' | 'BSE') => {
-    if (stocks.some(s => s.symbol === symbol && s.exchange === exchange)) {
+    const formattedSymbol = symbol.toUpperCase().trim();
+    if (stocks.some(s => s.symbol === formattedSymbol && s.exchange === exchange)) {
       alert("Stock already in watchlist.");
       return;
     }
 
     const newInstrument: Instrument = {
       id: Math.random().toString(36).substr(2, 9),
-      symbol,
-      name: `${symbol} (Custom)`,
-      price: Math.floor(Math.random() * 5000) + 100, // Random starting price for demo
+      symbol: formattedSymbol,
+      name: `${formattedSymbol} (Custom)`,
+      price: Math.floor(Math.random() * 5000) + 100,
       change: 0,
       changePercent: 0,
       exchange
@@ -103,6 +176,8 @@ const App: React.FC = () => {
     transactionType: TransactionType;
     quantity: number;
     price: number;
+    stopLoss?: number;
+    takeProfit?: number;
   }) => {
     const newOrder: Order = {
       id: Math.random().toString(36).substr(2, 9),
@@ -137,7 +212,9 @@ const App: React.FC = () => {
           newPositions[existingPosIdx] = { 
             ...p, 
             quantity: newQty, 
-            avgPrice: newAvgPrice
+            avgPrice: newAvgPrice,
+            stopLoss: orderDetails.stopLoss || p.stopLoss,
+            takeProfit: orderDetails.takeProfit || p.takeProfit
           };
         }
       } else {
@@ -147,7 +224,9 @@ const App: React.FC = () => {
           quantity: qtyChange,
           avgPrice: orderDetails.price,
           currentPrice: orderDetails.price,
-          realizedPnl: 0
+          realizedPnl: 0,
+          stopLoss: orderDetails.stopLoss,
+          takeProfit: orderDetails.takeProfit
         });
       }
 
@@ -233,30 +312,37 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
-                  <div className="bg-white p-0 rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[600px]">
+                  {/* Real-time Interactive Chart */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[550px]">
                     <PriceChart stock={selectedStock} />
                   </div>
 
+                  {/* AI & News Section */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                        <i className="fa-solid fa-brain text-blue-500"></i> AI Insight: {selectedStock.symbol}
-                      </h3>
-                      <div className={`text-sm text-slate-600 leading-relaxed ${isLoadingInsight ? 'animate-pulse' : ''}`}>
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                          <i className="fa-solid fa-brain text-blue-500"></i> AI Analyst Insights
+                        </h3>
+                        {isLoadingInsight && <i className="fa-solid fa-circle-notch fa-spin text-blue-400 text-xs"></i>}
+                      </div>
+                      <div className={`text-slate-600 text-sm leading-relaxed flex-1 ${isLoadingInsight ? 'opacity-40' : 'opacity-100'}`}>
                         {aiInsight}
                       </div>
                     </div>
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
                       <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                        <i className="fa-solid fa-newspaper text-orange-500"></i> Market News
+                        <i className="fa-solid fa-newspaper text-orange-500"></i> Market Pulse
                       </h3>
-                      <ul className="space-y-3">
+                      <div className="space-y-3 flex-1 overflow-y-auto max-h-40">
                         {news.map((item, i) => (
-                          <li key={i} className="text-sm text-slate-600 border-l-4 border-blue-500 pl-3 py-1">
-                            {item}
-                          </li>
+                          <div key={i} className="flex gap-3 items-start">
+                            <span className="w-1 h-1 bg-blue-500 rounded-full mt-2 flex-shrink-0"></span>
+                            <p className="text-xs text-slate-600 font-medium">{item}</p>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -370,7 +456,7 @@ const App: React.FC = () => {
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Avg Price</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">LTP</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">P&L</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Chg%</th>
+                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Exits</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
                    </tr>
                  </thead>
@@ -383,10 +469,10 @@ const App: React.FC = () => {
                      const stock = stocks.find(s => s.id === pos.instrumentId);
                      const ltp = stock?.price || pos.avgPrice;
                      const pnl = (ltp - pos.avgPrice) * pos.quantity;
-                     const pnlPercent = (pnl / (Math.abs(pos.avgPrice * Math.abs(pos.quantity)))) * 100;
+                     const pnlPercent = (pnl / (Math.abs(pos.avgPrice * Math.abs(pos.quantity)) || 1)) * 100;
 
                      return (
-                       <tr key={pos.instrumentId} className="hover:bg-slate-50/50 transition-colors">
+                       <tr key={`${pos.instrumentId}-${pos.quantity}`} className="hover:bg-slate-50/50 transition-colors">
                          <td className="px-6 py-4">
                            <div className="font-bold text-slate-800">{pos.symbol}</div>
                            <div className="text-[10px] text-slate-400 uppercase tracking-tighter">Paper Trade</div>
@@ -406,8 +492,11 @@ const App: React.FC = () => {
                          <td className={`px-6 py-4 font-black ${pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                            {pnl >= 0 ? '+' : ''}{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                          </td>
-                         <td className={`px-6 py-4 text-xs font-bold ${pnlPercent >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                           {pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(2)}%
+                         <td className="px-6 py-4">
+                            <div className="text-[10px] font-bold space-y-1 uppercase">
+                              <div className={pos.stopLoss ? 'text-rose-400' : 'text-slate-300'}>SL: {pos.stopLoss ? `₹${pos.stopLoss}` : 'NONE'}</div>
+                              <div className={pos.takeProfit ? 'text-emerald-400' : 'text-slate-300'}>TP: {pos.takeProfit ? `₹${pos.takeProfit}` : 'NONE'}</div>
+                            </div>
                          </td>
                          <td className="px-6 py-4 text-right">
                            <button 
@@ -423,6 +512,16 @@ const App: React.FC = () => {
                  </tbody>
                </table>
              </div>
+          </div>
+        );
+      case 'holdings':
+        return (
+          <div className="flex-1 p-8 bg-slate-50 flex items-center justify-center text-slate-400">
+            <div className="text-center">
+              <i className="fa-solid fa-suitcase text-5xl mb-4 opacity-20"></i>
+              <p className="font-medium">Holdings represent long-term portfolio assets.</p>
+              <p className="text-sm">For demo purposes, please use the Positions tab to track active trades.</p>
+            </div>
           </div>
         );
       case 'funds':
@@ -481,11 +580,7 @@ const App: React.FC = () => {
           </div>
         );
       default:
-        return (
-          <div className="flex-1 flex items-center justify-center text-slate-400 italic">
-            Component for "{activeTab}" under development.
-          </div>
-        );
+        return null;
     }
   };
 

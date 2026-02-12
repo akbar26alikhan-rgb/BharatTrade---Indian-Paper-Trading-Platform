@@ -13,6 +13,8 @@ interface TradingPanelProps {
     transactionType: TransactionType;
     quantity: number;
     price: number;
+    stopLoss?: number;
+    takeProfit?: number;
   }) => void;
 }
 
@@ -22,12 +24,23 @@ const TradingPanel: React.FC<TradingPanelProps> = ({ stock, walletBalance, onPla
   const [orderType, setOrderType] = useState<OrderType>(OrderType.MARKET);
   const [qty, setQty] = useState(1);
   const [limitPrice, setLimitPrice] = useState(stock.price);
+  
+  // Advanced Bracket Options
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [enableSL, setEnableSL] = useState(false);
+  const [enableTP, setEnableTP] = useState(false);
+  const [slPrice, setSlPrice] = useState(0);
+  const [tpPrice, setTpPrice] = useState(0);
 
   useEffect(() => {
     setLimitPrice(stock.price);
-  }, [stock]);
+    // Suggest default SL/TP values (e.g. 2% SL, 5% TP)
+    if (!enableSL) setSlPrice(txnType === TransactionType.BUY ? stock.price * 0.98 : stock.price * 1.02);
+    if (!enableTP) setTpPrice(txnType === TransactionType.BUY ? stock.price * 1.05 : stock.price * 0.95);
+  }, [stock, txnType]);
 
-  const totalCost = (orderType === OrderType.MARKET ? stock.price : limitPrice) * qty;
+  const executionPrice = orderType === OrderType.MARKET ? stock.price : limitPrice;
+  const totalCost = executionPrice * qty;
   const isInsufficient = txnType === TransactionType.BUY && totalCost > walletBalance;
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -40,9 +53,15 @@ const TradingPanel: React.FC<TradingPanelProps> = ({ stock, walletBalance, onPla
       productType,
       transactionType: txnType,
       quantity: qty,
-      price: orderType === OrderType.MARKET ? stock.price : limitPrice,
+      price: executionPrice,
+      stopLoss: enableSL ? slPrice : undefined,
+      takeProfit: enableTP ? tpPrice : undefined,
     });
   };
+
+  // Profit/Loss estimates
+  const estProfit = enableTP ? (txnType === TransactionType.BUY ? (tpPrice - executionPrice) * qty : (executionPrice - tpPrice) * qty) : 0;
+  const estLoss = enableSL ? (txnType === TransactionType.BUY ? (executionPrice - slPrice) * qty : (slPrice - executionPrice) * qty) : 0;
 
   return (
     <div className={`rounded-xl shadow-lg border overflow-hidden ${
@@ -137,13 +156,77 @@ const TradingPanel: React.FC<TradingPanelProps> = ({ stock, walletBalance, onPla
               type="number"
               step="0.05"
               disabled={orderType === OrderType.MARKET}
-              value={orderType === OrderType.MARKET ? stock.price : limitPrice}
+              value={orderType === OrderType.MARKET ? stock.price.toFixed(2) : limitPrice}
               onChange={(e) => setLimitPrice(Number(e.target.value))}
               className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all ${
                 orderType === OrderType.MARKET ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-slate-50 border-slate-200'
               }`}
             />
           </div>
+        </div>
+
+        {/* Bracket Orders / Advanced Section */}
+        <div className="border-t border-slate-100 pt-4">
+          <button 
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors uppercase tracking-widest"
+          >
+            <i className={`fa-solid fa-chevron-${showAdvanced ? 'down' : 'right'}`}></i>
+            Advanced Options (Bracket Order)
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-4 space-y-4 animate-in fade-in slide-in-from-top-2">
+               <div className="flex gap-4">
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Stop Loss</label>
+                      <input type="checkbox" checked={enableSL} onChange={e => setEnableSL(e.target.checked)} className="rounded" />
+                    </div>
+                    <input
+                      type="number"
+                      step="0.05"
+                      disabled={!enableSL}
+                      value={slPrice}
+                      onChange={e => setSlPrice(Number(e.target.value))}
+                      className={`w-full px-3 py-1.5 text-sm border rounded-lg focus:outline-none transition-all ${
+                        !enableSL ? 'bg-slate-50 text-slate-300 border-slate-100' : 'bg-white border-rose-200 text-rose-600'
+                      }`}
+                      placeholder="SL Price"
+                    />
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Take Profit</label>
+                      <input type="checkbox" checked={enableTP} onChange={e => setEnableTP(e.target.checked)} className="rounded" />
+                    </div>
+                    <input
+                      type="number"
+                      step="0.05"
+                      disabled={!enableTP}
+                      value={tpPrice}
+                      onChange={e => setTpPrice(Number(e.target.value))}
+                      className={`w-full px-3 py-1.5 text-sm border rounded-lg focus:outline-none transition-all ${
+                        !enableTP ? 'bg-slate-50 text-slate-300 border-slate-100' : 'bg-white border-emerald-200 text-emerald-600'
+                      }`}
+                      placeholder="TP Price"
+                    />
+                  </div>
+               </div>
+               
+               {(enableSL || enableTP) && (
+                 <div className="flex gap-4 text-[10px] font-bold uppercase">
+                   {enableSL && (
+                     <div className="text-rose-500">Max Risk: ₹{estLoss.toLocaleString('en-IN')}</div>
+                   )}
+                   {enableTP && (
+                     <div className="text-emerald-500">Target Profit: ₹{estProfit.toLocaleString('en-IN')}</div>
+                   )}
+                 </div>
+               )}
+            </div>
+          )}
         </div>
 
         <div className="bg-slate-50 p-4 rounded-xl space-y-2 border border-slate-100">
