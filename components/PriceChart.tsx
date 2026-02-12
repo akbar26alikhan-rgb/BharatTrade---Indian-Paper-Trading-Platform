@@ -4,9 +4,10 @@ import { Instrument } from '../types';
 
 interface PriceChartProps {
   stock: Instrument;
+  onExchangeChange?: (exchange: 'NSE' | 'BSE') => void;
 }
 
-const PriceChart: React.FC<PriceChartProps> = ({ stock }) => {
+const PriceChart: React.FC<PriceChartProps> = ({ stock, onExchangeChange }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,24 +68,34 @@ const PriceChart: React.FC<PriceChartProps> = ({ stock }) => {
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Chart Header */}
-      <div className="flex justify-between items-center p-4 border-b border-slate-100 bg-white">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 border-b border-slate-100 bg-white gap-4">
         <div className="flex items-center gap-4">
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-bold text-slate-800 leading-none">{stock.symbol}</h2>
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-widest ${
-                stock.exchange === 'BSE' ? 'bg-orange-100 text-orange-600 border border-orange-200' : 'bg-blue-100 text-blue-600 border border-blue-200'
-              }`}>
-                {stock.exchange} LIVE
-              </span>
+              <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                {(['NSE', 'BSE'] as const).map(ext => (
+                  <button
+                    key={ext}
+                    onClick={() => onExchangeChange?.(ext)}
+                    className={`px-3 py-1 text-[10px] font-black rounded-md transition-all uppercase tracking-tighter ${
+                      stock.exchange === ext 
+                        ? 'bg-white text-blue-600 shadow-sm' 
+                        : 'text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    {ext}
+                  </button>
+                ))}
+              </div>
             </div>
-            <p className="text-xs text-slate-500 font-medium truncate max-w-[150px] md:max-w-none">{stock.name}</p>
+            <p className="text-xs text-slate-500 font-medium truncate max-w-[150px] md:max-w-none mt-1">{stock.name}</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-6">
-          <div className="hidden sm:block text-right">
-             <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider leading-none mb-1">Market Price</div>
+        <div className="flex items-center gap-6 w-full sm:w-auto justify-between sm:justify-end">
+          <div className="text-right">
+             <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider leading-none mb-1">LTP ({stock.exchange})</div>
              <div className="text-xl font-black text-slate-900 leading-none">
               ₹{stock.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
              </div>
@@ -111,13 +122,13 @@ const PriceChart: React.FC<PriceChartProps> = ({ stock }) => {
 
       {/* Quick Stats Footer */}
       <div className="px-4 py-2 border-t border-slate-100 bg-white flex items-center gap-4 text-[10px] font-bold text-slate-400 overflow-x-auto whitespace-nowrap scrollbar-hide">
-        <span className="flex items-center gap-1"><i className="fa-solid fa-clock"></i> REAL-TIME FEED</span>
+        <span className="flex items-center gap-1"><i className="fa-solid fa-clock"></i> LIVE FEED</span>
         <span className="h-3 w-px bg-slate-200"></span>
-        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">Interval: 1m</span>
+        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">TF: 1m</span>
         <span className="h-3 w-px bg-slate-200"></span>
-        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">Exchange: {stock.exchange}</span>
+        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">SRC: {stock.exchange} DATA</span>
         <span className="h-3 w-px bg-slate-200"></span>
-        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">Timezone: IST</span>
+        <span className="flex items-center gap-1 text-slate-500 uppercase tracking-tighter">TZ: IST</span>
       </div>
     </div>
   );

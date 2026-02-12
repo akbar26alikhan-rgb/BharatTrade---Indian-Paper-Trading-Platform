@@ -168,6 +168,25 @@ const App: React.FC = () => {
     setSelectedStock(newInstrument);
   };
 
+  const handleExchangeChange = (exchange: 'NSE' | 'BSE') => {
+    if (selectedStock.exchange === exchange) return;
+    
+    // Check if we have this symbol on the other exchange in our current list
+    const existing = stocks.find(s => s.symbol === selectedStock.symbol && s.exchange === exchange);
+    
+    if (existing) {
+      setSelectedStock(existing);
+    } else {
+      // Temporarily "switch" the view to the other exchange by creating a virtual instrument
+      const updated: Instrument = {
+        ...selectedStock,
+        id: `${selectedStock.symbol}-${exchange}-${Math.random()}`, // Fresh ID to force widget reload
+        exchange
+      };
+      setSelectedStock(updated);
+    }
+  };
+
   const handlePlaceOrder = useCallback((orderDetails: {
     instrumentId: string;
     symbol: string;
@@ -314,7 +333,10 @@ const App: React.FC = () => {
                 <div className="xl:col-span-2 space-y-6">
                   {/* Real-time Interactive Chart */}
                   <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[550px]">
-                    <PriceChart stock={selectedStock} />
+                    <PriceChart 
+                      stock={selectedStock} 
+                      onExchangeChange={handleExchangeChange} 
+                    />
                   </div>
 
                   {/* AI & News Section */}
