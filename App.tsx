@@ -69,6 +69,11 @@ const App: React.FC = () => {
           const exitValue = price * Math.abs(pos.quantity);
           balanceChange += pos.quantity > 0 ? exitValue : -exitValue;
           
+          // Calculate Realized P&L
+          const realizedPnl = pos.quantity > 0 
+            ? (price - pos.avgPrice) * pos.quantity 
+            : (pos.avgPrice - price) * Math.abs(pos.quantity);
+
           // Log the order
           newOrders.unshift({
             id: Math.random().toString(36).substr(2, 9),
@@ -81,11 +86,12 @@ const App: React.FC = () => {
             price: price,
             status: OrderStatus.EXECUTED,
             timestamp: Date.now(),
+            realizedPnl: realizedPnl
           });
 
           // Remove position
           newPositions = newPositions.filter((p) => p.instrumentId !== pos.instrumentId || p.quantity !== pos.quantity);
-          console.log(`AUTO EXIT: ${pos.symbol} at ₹${price.toFixed(2)} via ${triggerType}`);
+          console.log(`AUTO EXIT: ${pos.symbol} at ₹${price.toFixed(2)} via ${triggerType} | PnL: ₹${realizedPnl.toFixed(2)}`);
         }
       });
 
@@ -198,13 +204,6 @@ const App: React.FC = () => {
     stopLoss?: number;
     takeProfit?: number;
   }) => {
-    const newOrder: Order = {
-      id: Math.random().toString(36).substr(2, 9),
-      ...orderDetails,
-      status: OrderStatus.EXECUTED,
-      timestamp: Date.now(),
-    };
-
     setState(prev => {
       const isBuy = orderDetails.transactionType === TransactionType.BUY;
       const totalValue = orderDetails.price * orderDetails.quantity;
@@ -215,9 +214,21 @@ const App: React.FC = () => {
       let newPositions = [...prev.positions];
       const existingPosIdx = newPositions.findIndex(p => p.instrumentId === orderDetails.instrumentId);
       const qtyChange = isBuy ? orderDetails.quantity : -orderDetails.quantity;
+      
+      let realizedPnl: number | undefined = undefined;
 
       if (existingPosIdx > -1) {
         const p = newPositions[existingPosIdx];
+        
+        // Calculate Realized P&L if reducing/closing position
+        const isReducing = (p.quantity > 0 && !isBuy) || (p.quantity < 0 && isBuy);
+        if (isReducing) {
+          const qtyToRealize = Math.min(Math.abs(p.quantity), orderDetails.quantity);
+          realizedPnl = isBuy 
+            ? (p.avgPrice - orderDetails.price) * qtyToRealize 
+            : (orderDetails.price - p.avgPrice) * qtyToRealize;
+        }
+
         const newQty = p.quantity + qtyChange;
         
         if (newQty === 0) {
@@ -248,6 +259,14 @@ const App: React.FC = () => {
           takeProfit: orderDetails.takeProfit
         });
       }
+
+      const newOrder: Order = {
+        id: Math.random().toString(36).substr(2, 9),
+        ...orderDetails,
+        status: OrderStatus.EXECUTED,
+        timestamp: Date.now(),
+        realizedPnl: realizedPnl
+      };
 
       return {
         ...prev,
@@ -407,7 +426,15 @@ const App: React.FC = () => {
           <div className="flex-1 p-8 bg-slate-50 overflow-y-auto">
              <div className="flex justify-between items-center mb-6">
                <h2 className="text-2xl font-bold text-slate-800">Order History</h2>
-               <span className="text-xs text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-200">Total: {state.orders.length}</span>
+               <div className="flex items-center gap-4">
+                 <button 
+                   onClick={() => setState(prev => ({ ...prev, orders: [] }))}
+                   className="text-xs font-bold text-rose-500 hover:text-rose-600 uppercase tracking-wider"
+                 >
+                   Clear History
+                 </button>
+                 <span className="text-xs text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-200">Total: {state.orders.length}</span>
+               </div>
              </div>
              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                <table className="w-full text-left">
@@ -418,17 +445,21 @@ const App: React.FC = () => {
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Instrument</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Qty</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Price</th>
+                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">P&L</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Status</th>
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-slate-50">
                    {state.orders.length === 0 ? (
                      <tr>
-                       <td colSpan={6} className="px-6 py-12 text-center text-slate-400">No orders placed yet.</td>
+                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400">No orders placed yet.</td>
                      </tr>
                    ) : state.orders.map(order => (
                      <tr key={order.id} className="hover:bg-slate-50/50 transition-colors">
-                       <td className="px-6 py-4 text-sm text-slate-500">{new Date(order.timestamp).toLocaleTimeString()}</td>
+                       <td className="px-6 py-4 text-sm text-slate-500">
+                         <div className="font-medium text-slate-700">{new Date(order.timestamp).toLocaleDateString()}</div>
+                         <div className="text-[10px] opacity-60">{new Date(order.timestamp).toLocaleTimeString()}</div>
+                       </td>
                        <td className="px-6 py-4">
                          <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${order.transactionType === TransactionType.BUY ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>
                            {order.transactionType}
@@ -436,7 +467,14 @@ const App: React.FC = () => {
                        </td>
                        <td className="px-6 py-4 font-bold text-slate-800">{order.symbol}</td>
                        <td className="px-6 py-4 text-sm text-slate-600">{order.quantity}</td>
-                       <td className="px-6 py-4 text-sm font-semibold text-slate-800">₹{order.price.toFixed(2)}</td>
+                       <td className="px-6 py-4 text-sm font-semibold text-slate-800">₹{order.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                       <td className={`px-6 py-4 text-sm font-bold ${order.realizedPnl !== undefined ? (order.realizedPnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-300'}`}>
+                         {order.realizedPnl !== undefined ? (
+                           <>
+                             {order.realizedPnl >= 0 ? '+' : ''}₹{order.realizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                           </>
+                         ) : '--'}
+                       </td>
                        <td className="px-6 py-4">
                          <span className="px-2 py-1 bg-emerald-100 text-emerald-600 rounded-md text-[10px] font-bold">EXECUTED</span>
                        </td>

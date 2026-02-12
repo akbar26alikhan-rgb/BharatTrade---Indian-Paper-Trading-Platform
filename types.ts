@@ -44,6 +44,7 @@ export interface Order {
   timestamp: number;
   stopLoss?: number;
   takeProfit?: number;
+  realizedPnl?: number;
 }
 
 export interface Position {
