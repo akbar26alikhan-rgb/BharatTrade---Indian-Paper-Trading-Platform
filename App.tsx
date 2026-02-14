@@ -6,7 +6,7 @@ import TradingPanel from './components/TradingPanel';
 import PriceChart from './components/PriceChart';
 import { Instrument, AppState, Order, OrderStatus, TransactionType, ProductType, OrderType, Position } from './types';
 import { INITIAL_STOCKS, INITIAL_BALANCE, INDICES } from './constants';
-import { getMarketInsights, getMarketNews } from './services/geminiService';
+import { getMarketInsights, getMarketNews, fetchLiveMarketPrices } from './services/geminiService';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -15,6 +15,41 @@ const App: React.FC = () => {
   const [news, setNews] = useState<string[]>([]);
   const [aiInsight, setAiInsight] = useState<string>('Select a stock to see AI analysis...');
   const [isLoadingInsight, setIsLoadingInsight] = useState(false);
+  const [isSyncingPrices, setIsSyncingPrices] = useState(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+
+  // Helper to check if Indian Market is open (IST: Mon-Fri, 9:15 AM - 3:30 PM)
+  const getMarketStatus = useCallback(() => {
+    const now = new Date();
+    // Convert to IST (UTC + 5:30)
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const ist = new Date(utc + (3600000 * 5.5));
+    
+    const day = ist.getDay(); // 0 is Sunday, 6 is Saturday
+    const hours = ist.getHours();
+    const minutes = ist.getMinutes();
+    const timeInMinutes = hours * 60 + minutes;
+
+    const isWeekend = day === 0 || day === 6;
+    const isMarketHours = timeInMinutes >= (9 * 60 + 15) && timeInMinutes <= (15 * 60 + 30);
+
+    return {
+      isOpen: !isWeekend && isMarketHours,
+      isWeekend,
+      istTime: ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      reason: isWeekend ? "Weekend" : (!isMarketHours ? "After/Before Hours" : "Open")
+    };
+  }, []);
+
+  const [marketStatus, setMarketStatus] = useState(getMarketStatus());
+
+  // Update market status every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMarketStatus(getMarketStatus());
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [getMarketStatus]);
 
   // App State with Persistence
   const [state, setState] = useState<AppState>(() => {
@@ -33,6 +68,47 @@ const App: React.FC = () => {
     localStorage.setItem('bharattrade_state', JSON.stringify(state));
   }, [state]);
 
+  // Sync Live Market Prices using Gemini
+  const syncMarketPrices = useCallback(async () => {
+    if (isSyncingPrices) return;
+    // We only sync if market is open, or it's the first load
+    if (!marketStatus.isOpen && lastSynced) {
+      console.log("Market is closed. Skipping live sync.");
+      return;
+    }
+
+    setIsSyncingPrices(true);
+    const symbols: string[] = Array.from(new Set(stocks.map(s => s.symbol)));
+    const livePrices = await fetchLiveMarketPrices(symbols);
+    
+    if (livePrices) {
+      setStocks(prev => prev.map(stock => {
+        const livePrice = livePrices[stock.symbol];
+        if (livePrice) {
+          const oldPrice = stock.price;
+          const change = livePrice - (oldPrice / (1 + (stock.changePercent / 100)));
+          return {
+            ...stock,
+            price: livePrice,
+            change: change,
+            changePercent: (change / (livePrice - change)) * 100
+          };
+        }
+        return stock;
+      }));
+      setLastSynced(new Date());
+    }
+    setIsSyncingPrices(false);
+  }, [stocks, isSyncingPrices, marketStatus.isOpen, lastSynced]);
+
+  // Initial Sync
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      syncMarketPrices();
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Handle auto-exits for SL/TP
   const checkTriggers = useCallback((currentStocks: Instrument[]) => {
     setState(prev => {
@@ -41,26 +117,21 @@ const App: React.FC = () => {
       let newPositions = [...prev.positions];
       let changed = false;
 
-      prev.positions.forEach((pos, idx) => {
+      prev.positions.forEach((pos) => {
         const stock = currentStocks.find(s => s.id === pos.instrumentId);
         if (!stock) return;
 
         const price = stock.price;
         let triggered = false;
-        let triggerType = "";
 
-        // Check Take Profit
         if (pos.takeProfit) {
           if ((pos.quantity > 0 && price >= pos.takeProfit) || (pos.quantity < 0 && price <= pos.takeProfit)) {
             triggered = true;
-            triggerType = "Take Profit";
           }
         }
-        // Check Stop Loss
         if (pos.stopLoss) {
           if ((pos.quantity > 0 && price <= pos.stopLoss) || (pos.quantity < 0 && price >= pos.stopLoss)) {
             triggered = true;
-            triggerType = "Stop Loss";
           }
         }
 
@@ -69,12 +140,10 @@ const App: React.FC = () => {
           const exitValue = price * Math.abs(pos.quantity);
           balanceChange += pos.quantity > 0 ? exitValue : -exitValue;
           
-          // Calculate Realized P&L
           const realizedPnl = pos.quantity > 0 
             ? (price - pos.avgPrice) * pos.quantity 
             : (pos.avgPrice - price) * Math.abs(pos.quantity);
 
-          // Log the order
           newOrders.unshift({
             id: Math.random().toString(36).substr(2, 9),
             instrumentId: pos.instrumentId,
@@ -89,7 +158,6 @@ const App: React.FC = () => {
             realizedPnl: realizedPnl
           });
 
-          // Remove position
           newPositions = newPositions.filter((p) => p.instrumentId !== pos.instrumentId || p.quantity !== pos.quantity);
         }
       });
@@ -105,12 +173,14 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // Simulate price updates every 2 seconds
+  // Simulate small price updates only if market is open
   useEffect(() => {
     const interval = setInterval(() => {
+      if (!marketStatus.isOpen) return; // Stop simulation if market is closed
+
       setStocks(prev => {
         const updatedStocks = prev.map(s => {
-          const volatility = 0.0015;
+          const volatility = 0.0005;
           const changeAmount = (Math.random() - 0.5) * s.price * volatility;
           const newPrice = Math.max(1, s.price + changeAmount);
           const originalPrice = s.price / (1 + (s.changePercent / 100));
@@ -128,10 +198,10 @@ const App: React.FC = () => {
         checkTriggers(updatedStocks);
         return updatedStocks;
       });
-    }, 2000);
+    }, 3000);
 
     return () => clearInterval(interval);
-  }, [checkTriggers]);
+  }, [checkTriggers, marketStatus.isOpen]);
 
   // Sync selected stock price and data
   useEffect(() => {
@@ -312,7 +382,6 @@ const App: React.FC = () => {
     return { totalPnl };
   }, [state.positions, stocks]);
 
-  // Grouping logic for "Datewise" history
   const groupedOrders = useMemo(() => {
     const groups: { [key: string]: Order[] } = {};
     state.orders.forEach(order => {
@@ -323,7 +392,6 @@ const App: React.FC = () => {
       groups[date].push(order);
     });
     return Object.entries(groups).sort((a, b) => {
-      // Sort by date descending
       const dateA = new Date(a[1][0].timestamp).getTime();
       const dateB = new Date(b[1][0].timestamp).getTime();
       return dateB - dateA;
@@ -349,13 +417,51 @@ const App: React.FC = () => {
                   </div>
                 ))}
               </div>
-              <div className="text-right ml-4">
-                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Equity Wallet</div>
-                <div className="text-xl font-bold text-blue-600">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+              
+              <div className="flex items-center gap-6">
+                <div className="flex flex-col items-end gap-1">
+                  <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest ${
+                    marketStatus.isOpen ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
+                  }`}>
+                    {marketStatus.isOpen ? 'Market Open' : `Market Closed (${marketStatus.reason})`}
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-bold uppercase">IST: {marketStatus.istTime}</div>
+                </div>
+
+                <div className="text-right flex flex-col items-end">
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={syncMarketPrices}
+                      disabled={isSyncingPrices || !marketStatus.isOpen}
+                      className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded-md transition-all ${
+                        isSyncingPrices || !marketStatus.isOpen ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+                      }`}
+                    >
+                      {isSyncingPrices ? <i className="fa-solid fa-spinner fa-spin mr-1"></i> : <i className="fa-solid fa-rotate mr-1"></i>}
+                      Sync Live Prices
+                    </button>
+                    {lastSynced && (
+                      <span className="text-[9px] text-slate-400 font-bold uppercase">
+                        Last: {lastSynced.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xl font-bold text-blue-600 leading-none mt-1">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+                </div>
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
+              {!marketStatus.isOpen && (
+                <div className="mb-6 bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center gap-4 text-amber-800">
+                  <i className="fa-solid fa-circle-info text-xl"></i>
+                  <div>
+                    <p className="text-sm font-bold">The Indian Stock Market is currently closed.</p>
+                    <p className="text-xs opacity-80">Market hours are Mon-Fri, 9:15 AM to 3:30 PM IST. Price simulation and live sync are paused.</p>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
                   <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden h-[550px]">
@@ -431,7 +537,6 @@ const App: React.FC = () => {
                  <span className="text-xs text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-200">Total: {state.orders.length}</span>
                </div>
              </div>
-
              <div className="space-y-10">
                {state.orders.length === 0 ? (
                  <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center text-slate-400 italic">
@@ -444,7 +549,6 @@ const App: React.FC = () => {
                      <div className="h-px flex-1 bg-slate-200"></div>
                      <span className="text-[10px] font-bold text-slate-400 uppercase">{orders.length} {orders.length === 1 ? 'Order' : 'Orders'}</span>
                    </div>
-                   
                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                      <table className="w-full text-left">
                        <thead className="bg-slate-50 border-b border-slate-100">
@@ -461,30 +565,13 @@ const App: React.FC = () => {
                        <tbody className="divide-y divide-slate-50">
                          {orders.map(order => (
                            <tr key={order.id} className="hover:bg-slate-50/50 transition-colors">
-                             <td className="px-6 py-4">
-                               <span className="text-xs font-bold text-slate-500">{new Date(order.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                             </td>
-                             <td className="px-6 py-4">
-                               <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-tighter ${order.transactionType === TransactionType.BUY ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>
-                                 {order.transactionType}
-                               </span>
-                             </td>
-                             <td className="px-6 py-4">
-                               <div className="font-bold text-slate-800 text-sm">{order.symbol}</div>
-                               <div className="text-[9px] text-slate-400 uppercase font-black">{order.productType}</div>
-                             </td>
+                             <td className="px-6 py-4"><span className="text-xs font-bold text-slate-500">{new Date(order.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></td>
+                             <td className="px-6 py-4"><span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-tighter ${order.transactionType === TransactionType.BUY ? 'bg-blue-100 text-blue-600' : 'bg-rose-100 text-rose-600'}`}>{order.transactionType}</span></td>
+                             <td className="px-6 py-4"><div className="font-bold text-slate-800 text-sm">{order.symbol}</div></td>
                              <td className="px-6 py-4 text-xs font-bold text-slate-600">{order.quantity}</td>
                              <td className="px-6 py-4 text-xs font-bold text-slate-800">₹{order.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                             <td className={`px-6 py-4 text-xs font-black ${order.realizedPnl !== undefined ? (order.realizedPnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-300'}`}>
-                               {order.realizedPnl !== undefined ? (
-                                 <>
-                                   {order.realizedPnl >= 0 ? '+' : ''}₹{order.realizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                 </>
-                               ) : '--'}
-                             </td>
-                             <td className="px-6 py-4 text-right">
-                               <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 rounded-md text-[9px] font-black tracking-tighter uppercase">EXECUTED</span>
-                             </td>
+                             <td className={`px-6 py-4 text-xs font-black ${order.realizedPnl !== undefined ? (order.realizedPnl >= 0 ? 'text-emerald-500' : 'text-rose-500') : 'text-slate-300'}`}>{order.realizedPnl !== undefined ? <>{order.realizedPnl >= 0 ? '+' : ''}₹{order.realizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : '--'}</td>
+                             <td className="px-6 py-4 text-right"><span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 rounded-md text-[9px] font-black tracking-tighter uppercase">EXECUTED</span></td>
                            </tr>
                          ))}
                        </tbody>
@@ -507,13 +594,7 @@ const App: React.FC = () => {
                       {portfolioStats.totalPnl >= 0 ? '+' : ''}₹{portfolioStats.totalPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </p>
                  </div>
-                 <button 
-                  onClick={handleSquareOffAll}
-                  disabled={state.positions.length === 0}
-                  className={`px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md ${state.positions.length === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-800 text-white hover:bg-slate-700'}`}
-                 >
-                   Square Off All
-                 </button>
+                 <button onClick={handleSquareOffAll} disabled={state.positions.length === 0} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md ${state.positions.length === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-800 text-white hover:bg-slate-700'}`}>Square Off All</button>
                </div>
              </div>
              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -525,46 +606,24 @@ const App: React.FC = () => {
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Avg Price</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">LTP</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">P&L</th>
-                     <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Targets</th>
                      <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-slate-50">
                    {state.positions.length === 0 ? (
-                     <tr>
-                       <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">No open positions. Select a stock to trade.</td>
-                     </tr>
+                     <tr><td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic">No open positions. Select a stock to trade.</td></tr>
                    ) : state.positions.map(pos => {
                      const stock = stocks.find(s => s.id === pos.instrumentId);
                      const ltp = stock?.price || pos.avgPrice;
                      const pnl = (ltp - pos.avgPrice) * pos.quantity;
                      return (
                        <tr key={`${pos.instrumentId}-${pos.quantity}`} className="hover:bg-slate-50/50 transition-colors">
-                         <td className="px-6 py-4">
-                           <div className="font-bold text-slate-800">{pos.symbol}</div>
-                           <div className="text-[10px] text-slate-400 uppercase font-black">Paper Trade</div>
-                         </td>
-                         <td className="px-6 py-4 text-center">
-                           <span className={`px-2 py-1 rounded-md text-xs font-bold ${pos.quantity > 0 ? 'bg-blue-50 text-blue-600' : 'bg-rose-50 text-rose-600'}`}>
-                             {pos.quantity}
-                           </span>
-                         </td>
-                         <td className="px-6 py-4 text-sm text-slate-600 font-bold">₹{pos.avgPrice.toFixed(2)}</td>
-                         <td className="px-6 py-4 text-sm font-bold text-slate-800">
-                           ₹{ltp.toFixed(2)}
-                         </td>
-                         <td className={`px-6 py-4 font-black text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                           {pnl >= 0 ? '+' : ''}{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                         </td>
-                         <td className="px-6 py-4">
-                            <div className="text-[10px] font-bold space-y-1 uppercase tracking-tighter">
-                              <div className={pos.stopLoss ? 'text-rose-400' : 'text-slate-300'}>SL: {pos.stopLoss ? `₹${pos.stopLoss}` : 'NONE'}</div>
-                              <div className={pos.takeProfit ? 'text-emerald-400' : 'text-slate-300'}>TP: {pos.takeProfit ? `₹${pos.takeProfit}` : 'NONE'}</div>
-                            </div>
-                         </td>
-                         <td className="px-6 py-4 text-right">
-                           <button className="px-4 py-1.5 text-xs font-black text-white bg-rose-600 rounded-lg hover:bg-rose-700 transition-all uppercase tracking-tighter" onClick={() => handleExitPosition(pos)}>Exit</button>
-                         </td>
+                         <td className="px-6 py-4"><div className="font-bold text-slate-800">{pos.symbol}</div></td>
+                         <td className="px-6 py-4 text-center"><span className={`px-2 py-1 rounded-md text-xs font-bold ${pos.quantity > 0 ? 'bg-blue-50 text-blue-600' : 'bg-rose-50 text-rose-600'}`}>{pos.quantity}</span></td>
+                         <td className="px-6 py-4 text-sm font-bold">₹{pos.avgPrice.toFixed(2)}</td>
+                         <td className="px-6 py-4 text-sm font-bold text-slate-800">₹{ltp.toFixed(2)}</td>
+                         <td className={`px-6 py-4 font-black text-sm ${pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{pnl >= 0 ? '+' : ''}{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                         <td className="px-6 py-4 text-right"><button className="px-4 py-1.5 text-xs font-black text-white bg-rose-600 rounded-lg hover:bg-rose-700 transition-all uppercase tracking-tighter" onClick={() => handleExitPosition(pos)}>Exit</button></td>
                        </tr>
                      );
                    })}
@@ -583,23 +642,10 @@ const App: React.FC = () => {
                 <p className="text-5xl font-black text-blue-600 mb-8">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
                 <div className="space-y-4 border-t border-slate-100 pt-6">
                   <div className="flex justify-between"><span className="text-slate-500 font-bold text-xs uppercase">Opening Balance</span><span className="font-black text-slate-800">₹{state.wallet.initialBalance.toLocaleString('en-IN')}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500 font-bold text-xs uppercase">Used Margin</span><span className="font-black text-rose-500">₹{ (state.wallet.initialBalance - state.wallet.balance > 0 ? state.wallet.initialBalance - state.wallet.balance : 0).toLocaleString('en-IN') }</span></div>
                 </div>
                 <div className="mt-10 flex gap-4">
                   <button className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-black uppercase text-xs hover:bg-blue-700 transition-all shadow-lg shadow-blue-100">Add Funds</button>
                   <button onClick={() => { if(confirm("Reset wallet to 10 Lakh?")) { setState(prev => ({ ...prev, wallet: { balance: INITIAL_BALANCE, initialBalance: INITIAL_BALANCE }, positions: [], orders: [] })); } }} className="flex-1 bg-slate-100 text-slate-600 py-3 rounded-xl font-black uppercase text-xs hover:bg-slate-200 transition-all">Reset Wallet</button>
-                </div>
-              </div>
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
-                <h3 className="font-black text-slate-800 mb-6 uppercase tracking-widest text-xs">Recent Ledger</h3>
-                <div className="space-y-4">
-                  {state.orders.slice(0, 5).map(order => (
-                    <div key={order.id} className="flex justify-between items-center py-3 border-b border-slate-50">
-                      <div><p className="font-bold text-sm text-slate-800">{order.transactionType === TransactionType.BUY ? 'Bought' : 'Sold'} {order.symbol}</p><p className="text-[10px] text-slate-400 font-bold">{new Date(order.timestamp).toLocaleString()}</p></div>
-                      <p className={`font-black text-sm ${order.transactionType === TransactionType.BUY ? 'text-rose-500' : 'text-emerald-500'}`}>{order.transactionType === TransactionType.BUY ? '-' : '+'}₹{(order.price * order.quantity).toLocaleString('en-IN')}</p>
-                    </div>
-                  ))}
-                  {state.orders.length === 0 && <p className="text-center text-slate-400 py-10 italic">No transactions yet.</p>}
                 </div>
               </div>
             </div>
