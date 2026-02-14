@@ -18,36 +18,41 @@ const App: React.FC = () => {
   const [isSyncingPrices, setIsSyncingPrices] = useState(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
-  // Helper to check if Indian Market is open (IST: Mon-Fri, 9:15 AM - 3:30 PM)
+  // Helper to get comprehensive IST Market Info
   const getMarketStatus = useCallback(() => {
     const now = new Date();
     // Convert to IST (UTC + 5:30)
     const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-    const ist = new Date(utc + (3600000 * 5.5));
+    const istDate = new Date(utc + (3600000 * 5.5));
     
-    const day = ist.getDay(); // 0 is Sunday, 6 is Saturday
-    const hours = ist.getHours();
-    const minutes = ist.getMinutes();
+    const day = istDate.getDay(); // 0 is Sunday, 6 is Saturday
+    const hours = istDate.getHours();
+    const minutes = istDate.getMinutes();
     const timeInMinutes = hours * 60 + minutes;
 
     const isWeekend = day === 0 || day === 6;
     const isMarketHours = timeInMinutes >= (9 * 60 + 15) && timeInMinutes <= (15 * 60 + 30);
 
+    const istTimeStr = istDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    const istDateStr = istDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
     return {
       isOpen: !isWeekend && isMarketHours,
       isWeekend,
-      istTime: ist.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-      reason: isWeekend ? "Weekend" : (!isMarketHours ? "After/Before Hours" : "Open")
+      istFull: `${istDateStr} | ${istTimeStr}`,
+      istTimeOnly: istTimeStr,
+      istDateOnly: istDateStr,
+      reason: isWeekend ? "Weekend" : (!isMarketHours ? "Outside Hours" : "Live")
     };
   }, []);
 
-  const [marketStatus, setMarketStatus] = useState(getMarketStatus());
+  const [marketClock, setMarketClock] = useState(getMarketStatus());
 
-  // Update market status every minute
+  // Update market clock every second for precision
   useEffect(() => {
     const interval = setInterval(() => {
-      setMarketStatus(getMarketStatus());
-    }, 60000);
+      setMarketClock(getMarketStatus());
+    }, 1000);
     return () => clearInterval(interval);
   }, [getMarketStatus]);
 
@@ -72,8 +77,7 @@ const App: React.FC = () => {
   const syncMarketPrices = useCallback(async () => {
     if (isSyncingPrices) return;
     // We only sync if market is open, or it's the first load
-    if (!marketStatus.isOpen && lastSynced) {
-      console.log("Market is closed. Skipping live sync.");
+    if (!marketClock.isOpen && lastSynced) {
       return;
     }
 
@@ -99,7 +103,7 @@ const App: React.FC = () => {
       setLastSynced(new Date());
     }
     setIsSyncingPrices(false);
-  }, [stocks, isSyncingPrices, marketStatus.isOpen, lastSynced]);
+  }, [stocks, isSyncingPrices, marketClock.isOpen, lastSynced]);
 
   // Initial Sync
   useEffect(() => {
@@ -176,7 +180,7 @@ const App: React.FC = () => {
   // Simulate small price updates only if market is open
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!marketStatus.isOpen) return; // Stop simulation if market is closed
+      if (!marketClock.isOpen) return;
 
       setStocks(prev => {
         const updatedStocks = prev.map(s => {
@@ -201,7 +205,7 @@ const App: React.FC = () => {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [checkTriggers, marketStatus.isOpen]);
+  }, [checkTriggers, marketClock.isOpen]);
 
   // Sync selected stock price and data
   useEffect(() => {
@@ -420,44 +424,47 @@ const App: React.FC = () => {
               
               <div className="flex items-center gap-6">
                 <div className="flex flex-col items-end gap-1">
-                  <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest ${
-                    marketStatus.isOpen ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
+                  <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 ${
+                    marketClock.isOpen ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
                   }`}>
-                    {marketStatus.isOpen ? 'Market Open' : `Market Closed (${marketStatus.reason})`}
+                    <span className={`w-1.5 h-1.5 rounded-full ${marketClock.isOpen ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                    {marketClock.isOpen ? 'Market Live' : `Market Closed (${marketClock.reason})`}
                   </div>
-                  <div className="text-[10px] text-slate-400 font-bold uppercase">IST: {marketStatus.istTime}</div>
+                  <div className="text-[10px] text-slate-500 font-black uppercase tracking-tighter">
+                    Market Time: <span className="text-slate-800">{marketClock.istFull}</span>
+                  </div>
                 </div>
 
                 <div className="text-right flex flex-col items-end">
                   <div className="flex items-center gap-2">
                     <button 
                       onClick={syncMarketPrices}
-                      disabled={isSyncingPrices || !marketStatus.isOpen}
+                      disabled={isSyncingPrices || !marketClock.isOpen}
                       className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded-md transition-all ${
-                        isSyncingPrices || !marketStatus.isOpen ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+                        isSyncingPrices || !marketClock.isOpen ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
                       }`}
                     >
                       {isSyncingPrices ? <i className="fa-solid fa-spinner fa-spin mr-1"></i> : <i className="fa-solid fa-rotate mr-1"></i>}
-                      Sync Live Prices
+                      Update Market Prices
                     </button>
                     {lastSynced && (
                       <span className="text-[9px] text-slate-400 font-bold uppercase">
-                        Last: {lastSynced.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        Sync: {lastSynced.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     )}
                   </div>
-                  <div className="text-xl font-bold text-blue-600 leading-none mt-1">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+                  <div className="text-xl font-bold text-blue-600 leading-none mt-1 tracking-tight">₹{state.wallet.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
                 </div>
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
-              {!marketStatus.isOpen && (
-                <div className="mb-6 bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center gap-4 text-amber-800">
-                  <i className="fa-solid fa-circle-info text-xl"></i>
+              {!marketClock.isOpen && (
+                <div className="mb-6 bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center gap-4 text-amber-800 shadow-sm">
+                  <i className="fa-solid fa-clock-rotate-left text-xl"></i>
                   <div>
-                    <p className="text-sm font-bold">The Indian Stock Market is currently closed.</p>
-                    <p className="text-xs opacity-80">Market hours are Mon-Fri, 9:15 AM to 3:30 PM IST. Price simulation and live sync are paused.</p>
+                    <p className="text-sm font-bold uppercase tracking-tight">NSE/BSE Trading is currently paused</p>
+                    <p className="text-xs opacity-80">Indian markets operate Mon-Fri, 9:15 AM to 3:30 PM IST. Please return during market hours for live action.</p>
                   </div>
                 </div>
               )}
